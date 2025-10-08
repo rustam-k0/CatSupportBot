@@ -1,139 +1,127 @@
+# app/services/data_parser.py
+
 import re
 from datetime import datetime
-import locale
 import logging
 
 logger = logging.getLogger(__name__)
 
-# --- Инициализация локали для парсинга дат на русском ---
-try:
-    locale.setlocale(locale.LC_TIME, 'ru_RU.UTF-8')
-except locale.Error:
-    try:
-        locale.setlocale(locale.LC_TIME, 'Russian_Russia.1251')
-    except locale.Error:
-        logger.warning("Не удалось установить русскую локаль")
-
-# --- Улучшенные паттерны для поиска сумм ---
-AMOUNT_PATTERNS = [
-    # Приоритет 1: Прямые указания суммы
-    re.compile(r'(?:сумма|итог|total|amount|transfer|пополнение|списано|оплата)[\s:]*([0-9]+[.,]?[0-9]*)[\s]*(?:руб|₽|р\.)?', re.IGNORECASE),
-    # Приоритет 2: Форматы с валютой
-    re.compile(r'([0-9]+[.,][0-9]{2})\s*(?:руб|₽|р\.)', re.IGNORECASE),
-    # Приоритет 3: Любое число с плавающей точкой
-    re.compile(r'(\d+[.,]\d{2})(?!\d)'),
-]
-
-DATE_PATTERNS = [
-    re.compile(r'\b(\d{2}[./-]\d{2}[./-]\d{4})\b'),
-    re.compile(r'\b(\d{1,2})\s+(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+(\d{4})', re.IGNORECASE),
-    re.compile(r'\b(\d{1,2})\s+(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{4})', re.IGNORECASE),
-]
-
-AUTHOR_PATTERNS = [
-    re.compile(r'(?:отправитель|sender|держатель|плательщик|from|имя)[\s:]*([А-ЯЁ][а-яё\s.-]+\b)', re.IGNORECASE),
-    re.compile(r'\b([А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)*)\b'),
-]
-
-def _normalize_amount(text: str) -> str:
-    """Нормализует строку с суммой для преобразования в float."""
-    return text.replace(' ', '').replace(',', '.')
+def _clean_text(text: str) -> str:
+    """Вспомогательная функция для очистки и нормализации текста."""
+    # Заменяем распространенные опечатки OCR
+    text = text.replace('Р', '₽').replace('Р.', '₽').replace('руб.', '₽')
+    # Добавляем пробелы вокруг, чтобы регулярные выражения с \b работали надежнее
+    return f' {text} '
 
 def parse_amount(text: str) -> float | None:
-    """Многоуровневый поиск суммы в тексте."""
-    lines = text.split('\n')
+    """
+    Ищет сумму в тексте, используя каскадный пошаговый поиск.
+    1. Ищет точные ключевые слова.
+    2. Ищет сумму на отдельной строке с валютой.
+    3. Ищет числа в формате "1 234,56".
+    4. Ищет любое число рядом со знаком валюты.
+    """
+    clean_text = _clean_text(text)
     
-    for pattern in AMOUNT_PATTERNS:
-        for line in lines:
-            match = pattern.search(line)
-            if match:
-                try:
-                    amount_str = _normalize_amount(match.group(1))
-                    # Убираем лишние точки (для форматов типа 1.000,50)
-                    if amount_str.count('.') > 1:
-                        parts = amount_str.split('.')
-                        amount_str = '.'.join(parts[:-1]) + '.' + parts[-1]
-                    return float(amount_str)
-                except (ValueError, IndexError) as e:
-                    logger.debug(f"Ошибка парсинга суммы '{match.group(1)}': {e}")
-                    continue
+    PATTERNS = [
+        # 1. ТОЧНОЕ СООТВЕТСТВИЕ: Ключевое слово + число
+        {'desc': 'Ключевое слово (Сумма, Итог)', 'regex': r'(?:Сумма|Итог|Всего|Total|Amount)[\s:]+([\d\s,.]+)', 'flags': re.IGNORECASE},
+        
+        # 2. ПОИСК ПО ФОРМАТУ: Число с валютой на отдельной строке (самый частый кейс)
+        {'desc': 'Число с валютой на отдельной строке', 'regex': r'^\s*([\d\s,.]+[\d])\s*₽\s*$', 'flags': re.IGNORECASE | re.MULTILINE},
+        
+        # 3. ПОИСК ПО ПОХОЖЕМУ ФОРМАТУ: Числа с разделителями-запятыми/пробелами
+        {'desc': 'Число с копейками (1,234.56)', 'regex': r'\b(\d{1,3}(?:\s\d{3})*[,.]\d{2})\b', 'flags': 0},
+        
+        # 4. ОБЩИЙ ПОИСК: Любое число рядом со знаком валюты
+        {'desc': 'Любое число рядом с ₽', 'regex': r'([\d\s,.]+[\d])\s*₽', 'flags': re.IGNORECASE},
+    ]
 
-    # Резервный поиск: наибольшее число в тексте
-    numbers = []
-    for line in lines:
-        # Пропускаем строки с ID, номерами карт и т.д.
-        if any(kw in line.lower() for kw in ['карта', 'счет', 'id', '№', 'number']):
-            continue
-            
-        matches = re.findall(r'\b\d+[.,]?\d*\b', line)
-        for match in matches:
+    for p in PATTERNS:
+        match = re.search(p['regex'], clean_text, p['flags'])
+        if match:
             try:
-                num = float(_normalize_amount(match))
-                numbers.append(num)
-            except ValueError:
+                amount_str = match.group(1).replace(' ', '').replace(',', '.')
+                logger.info(f"✅ Сумма найдена (шаблон: \"{p['desc']}\"): {amount_str}")
+                return float(amount_str)
+            except (ValueError, IndexError):
                 continue
     
-    return max(numbers) if numbers else None
+    logger.warning("⚠️ Не удалось найти сумму ни одним из шаблонов.")
+    return None
 
 def parse_date(text: str) -> str | None:
-    """Универсальный поиск даты в тексте."""
-    for line in text.split('\n'):
-        for pattern in DATE_PATTERNS:
-            match = pattern.search(line)
-            if match:
-                try:
-                    if len(match.groups()) == 1:
-                        # Формат DD.MM.YYYY
-                        date_str = match.group(1).replace('/', '.').replace('-', '.')
-                        dt_object = datetime.strptime(date_str, "%d.%m.%Y")
-                    else:
-                        # Текстовый формат
-                        day, month_str, year = match.groups()
-                        month_dict = {
-                            'января': 1, 'февраля': 2, 'марта': 3, 'апреля': 4,
-                            'мая': 5, 'июня': 6, 'июля': 7, 'августа': 8,
-                            'сентября': 9, 'октября': 10, 'ноября': 11, 'декабря': 12,
-                            'january': 1, 'february': 2, 'march': 3, 'april': 4,
-                            'may': 5, 'june': 6, 'july': 7, 'august': 8,
-                            'september': 9, 'october': 10, 'november': 11, 'december': 12
-                        }
-                        month = month_dict.get(month_str.lower())
-                        if month:
-                            dt_object = datetime(int(year), month, int(day))
-                        else:
-                            continue
-                    
-                    return dt_object.strftime("%d.%m.%Y")
-                except (ValueError, IndexError) as e:
-                    logger.debug(f"Ошибка парсинга даты '{match.group(0)}': {e}")
-                    continue
+    """Ищет дату в различных форматах (ДД.ММ.ГГГГ, ДД/ММ/ГГГГ) и валидирует ее."""
+    # Паттерн ищет дату с разделителями '.', '/' или '-'
+    match = re.search(r'\b(\d{2}[./-]\d{2}[./-]\d{2,4})\b', text)
+    if match:
+        try:
+            date_str = match.group(1).replace('/', '.').replace('-', '.')
+            # Попытка распознать полный год
+            if len(date_str.split('.')[-1]) == 4:
+                dt_obj = datetime.strptime(date_str, "%d.%m.%Y")
+            else: # Распознавание короткого года
+                dt_obj = datetime.strptime(date_str, "%d.%m.%y")
+            
+            full_date_str = dt_obj.strftime("%d.%m.%Y")
+            logger.info(f"✅ Дата найдена и нормализована: {full_date_str}")
+            return full_date_str
+        except ValueError:
+            logger.warning(f"⚠️ Найдена строка, похожая на дату, но невалидная: {match.group(1)}")
     return None
 
 def parse_author(text: str) -> str | None:
-    """Поиск автора/отправителя."""
-    for pattern in AUTHOR_PATTERNS:
-        match = pattern.search(text)
+    """
+    Ищет автора/отправителя, используя каскадный пошаговый поиск.
+    1. Точное соответствие с ключевыми словами.
+    2. Синонимы и сокращения.
+    3. Популярные форматы имен без ключевых слов.
+    4. Названия компаний в кавычках.
+    """
+    PATTERNS = [
+        # 1. ТОЧНОЕ СООТВЕТСТВИЕ: Ключевое слово + Имя
+        {'desc': 'Ключевое слово (Отправитель)', 'regex': r'(?:Отправитель|Sender|Плательщик)[\s:]+([А-ЯЁа-яё\s.]+)', 'flags': re.IGNORECASE},
+        
+        # 2. СИНОНИМЫ:
+        {'desc': 'Синоним (От кого, Клиент)', 'regex': r'(?:От кого|Клиент|From)[\s:]+([А-ЯЁа-яё\s.]+)', 'flags': re.IGNORECASE},
+
+        # 3. ПОИСК ПО ФОРМАТУ: Популярные форматы имен без ключевых слов
+        {'desc': 'Формат "ФАМИЛИЯ И. О."', 'regex': r'\b([А-ЯЁ]{3,}\s[А-ЯЁ]\.\s?[А-ЯЁ]\.)\b', 'flags': 0},
+        {'desc': 'Формат "Имя Ф."', 'regex': r'\b([А-ЯЁ][а-яё]+\s[А-ЯЁ]\.)\b', 'flags': 0},
+        
+        # 4. ОБЩИЙ ПОИСК: Название в кавычках
+        {'desc': 'Название в кавычках', 'regex': r'[«"]([^»"]+)[»"]', 'flags': 0},
+    ]
+
+    for p in PATTERNS:
+        match = re.search(p['regex'], text, p['flags'])
         if match:
-            author = " ".join(match.group(1).split())
-            # Фильтруем слишком короткие или нерелевантные совпадения
-            if len(author) > 2 and author.lower() not in ['отправитель', 'плательщик']:
-                return author
+            # Убираем лишние пробелы и точки из найденной строки
+            author = re.sub(r'[\s.]+$', '', match.group(1).strip())
+            logger.info(f"✅ Автор найден (шаблон: \"{p['desc']}\"): {author}")
+            return author
+            
+    logger.warning("⚠️ Не удалось найти автора ни одним из шаблонов.")
     return None
 
 def parse_bank(text: str) -> str | None:
-    """Ищет в тексте упоминания банков по ключевым словам."""
+    """Ищет название банка по ключевым словам. Более устойчив к форматированию."""
     BANK_KEYWORDS = {
-        'сбер': 'Сбербанк', 'сбербанк': 'Сбербанк',
-        'тинькофф': 'Т-Банк', 'tinkoff': 'Т-Банк',
-        'т-банк': 'Т-Банк', 'тбанк': 'Т-Банк',
-        'альфа': 'Альфа-Банк', 'альфабанк': 'Альфа-Банк', 'alfa': 'Альфа-Банк',
-        'втб': 'ВТБ', 'втб24': 'ВТБ', 'vtb': 'ВТБ',
-        'газпром': 'Газпромбанк', 'газпромбанк': 'Газпромбанк',
-        'открытие': 'Банк Открытие', 'openbank': 'Банк Открытие',
+        'т-банк': 'Т-Банк', 'тбанк': 'Т-Банк', 'тинькофф': 'Т-Банк', 'tinkoff': 'Т-Банк',
+        'сбербанк': 'Сбербанк', 'сбер': 'Сбер',
+        'альфа-банк': 'Альфа-Банк', 'альфабанк': 'Альфа-Банк',
+        'втб': 'ВТБ',
     }
     
-    lower_text = text.lower()
+    clean_text = ' ' + text.lower().replace('«', ' ').replace('»', ' ') + ' '
+    
     for keyword, bank_name in BANK_KEYWORDS.items():
-        if keyword in lower_text:
+        if f' {keyword} ' in clean_text:
+            logger.info(f"✅ Банк найден по ключевому слову '{keyword}': {bank_name}")
             return bank_name
+
+    if 'яндекс' in clean_text and ('сбп' in clean_text or 'система быстрых платежей' in clean_text):
+        logger.info("✅ Обнаружен перевод через Яндекс СБП")
+        return 'Яндекс СБП'
+        
     return None

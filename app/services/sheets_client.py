@@ -1,93 +1,131 @@
+# app/services/sheets_client.py
+
 import gspread
 import os
-from gspread.exceptions import WorksheetNotFound, SpreadsheetNotFound, APIError
+from gspread.exceptions import APIError, WorksheetNotFound
 import logging
 
 logger = logging.getLogger(__name__)
 
 # --- Конфигурация ---
-# Файл лежит в корне проекта
 CREDENTIALS_FILE = "credentials.json"
 SPREADSHEET_NAME = "HvostatyeSosediBot_DB"
+TEMPLATE_SHEET_NAME = "Шаблон"
 
-# Заголовки для разных типов листов
-INCOME_HEADERS = ["Дата", "Банк", "Сумма", "Комментарий", "Автор"]
-EXPENSE_HEADERS = ["Питомец", "Дата", "Сумма", "Комментарий", "Автор"]
+# --- НОВАЯ СТРУКТУРА КОЛОНОК СОГЛАСНО ПРАВКАМ ---
+INCOME_COLS = {
+    "start": "A", "end": "E", "check_col_index": 1, # Колонка A "Дата"
+}
+EXPENSE_COLS = {
+    "start": "G", "end": "K", "check_col_index": 7, # Колонка G "Дата"
+}
 
-def get_spreadsheet_link(spreadsheet, worksheet):
-    """Формирует прямую ссылку на конкретный лист в таблице."""
+# --- Вспомогательные функции ---
+
+def get_spreadsheet_link(spreadsheet: gspread.Spreadsheet, worksheet: gspread.Worksheet) -> str:
     return f"https://docs.google.com/spreadsheets/d/{spreadsheet.id}/edit#gid={worksheet.id}"
 
-def write_transaction(pet_name: str, transaction_data: dict) -> str | None:
-    """
-    Записывает данные о транзакции в Google Sheets с улучшенной обработкой ошибок.
-    """
-    # Проверяем наличие файла credentials
+def _create_fallback_worksheet(spreadsheet: gspread.Spreadsheet, sheet_name: str) -> gspread.Worksheet | None:
+    """Создает простой лист, если шаблон не найден, с корректными заголовками."""
+    logger.warning(f"Шаблон '{TEMPLATE_SHEET_NAME}' не найден! Создается базовый лист для '{sheet_name}'.")
+    try:
+        worksheet = spreadsheet.add_worksheet(title=sheet_name, rows="300", cols="20")
+        
+        worksheet.update('F1', sheet_name)
+        worksheet.update('A2', 'Приход')
+        worksheet.update('G2', 'Расход')
+        
+        income_headers = ["Дата", "Сумма", "Банк", "Автор", "Комментарий"]
+        expense_headers = ["Дата", "Сумма", "Процедура", "Автор", "Комментарий"]
+        worksheet.update('A3', [income_headers])
+        worksheet.update('G3', [expense_headers])
+        
+        return worksheet
+    except APIError as e:
+        logger.error(f"Не удалось создать даже базовый лист: {e}")
+        return None
+
+def _find_or_create_worksheet(spreadsheet: gspread.Spreadsheet, pet_name: str) -> gspread.Worksheet | None:
+    """Находит лист по имени питомца или создает его копированием из шаблона."""
+    try:
+        return spreadsheet.worksheet(pet_name)
+    except WorksheetNotFound:
+        logger.info(f"Лист для '{pet_name}' не найден. Ищем шаблон '{TEMPLATE_SHEET_NAME}' для копирования.")
+
+    try:
+        template_worksheet = spreadsheet.worksheet(TEMPLATE_SHEET_NAME)
+        new_worksheet = template_worksheet.duplicate(new_sheet_name=pet_name)
+        
+        # Обновляем центральный заголовок в F1 на реальное имя
+        new_worksheet.update_cell(1, 6, pet_name) # Ячейка F1
+        
+        logger.info(f"✅ Шаблон '{TEMPLATE_SHEET_NAME}' успешно скопирован в новый лист '{pet_name}'.")
+        return new_worksheet
+    except WorksheetNotFound:
+        return _create_fallback_worksheet(spreadsheet, pet_name)
+    except APIError as e:
+        logger.error(f"Ошибка API при копировании шаблона: {e}")
+        return None
+
+# --- НОВАЯ ЛОГИКА ЗАПИСИ ДАННЫХ ---
+def write_transaction(transaction_data: dict) -> str | None:
+    """Записывает транзакцию в Google Sheets согласно новой структуре."""
     if not os.path.exists(CREDENTIALS_FILE):
-        logger.error(f"Файл {CREDENTIALS_FILE} не найден в корне проекта!")
+        logger.critical(f"КРИТИЧЕСКАЯ ОШИБКА: Файл {CREDENTIALS_FILE} не найден!")
         return None
 
     try:
         gc = gspread.service_account(filename=CREDENTIALS_FILE)
         spreadsheet = gc.open(SPREADSHEET_NAME)
-        logger.info(f"Успешно открыта таблица: {SPREADSHEET_NAME}")
-    except SpreadsheetNotFound:
-        logger.error(f"Таблица '{SPREADSHEET_NAME}' не найдена.")
-        return None
     except Exception as e:
-        logger.error(f"Ошибка доступа к Google Sheets: {e}")
+        logger.error(f"Не удалось получить доступ к Google Sheets: {e}", exc_info=True)
+        return None
+
+    pet_name = transaction_data.get('pet_name', '').strip().capitalize()
+    if not pet_name:
+        logger.error("В данных транзакции отсутствует 'pet_name'. Операция прервана.")
+        return None
+
+    worksheet = _find_or_create_worksheet(spreadsheet, pet_name)
+    if not worksheet:
+        return None
+
+    trans_type = transaction_data.get('type')
+    
+    if trans_type == 'income':
+        target_cols = INCOME_COLS
+        # Порядок колонок для ПРИХОДА: Дата, Сумма, Банк, Автор, Комментарий
+        row_data = [
+            transaction_data.get('date', ''),
+            transaction_data.get('amount', ''),
+            transaction_data.get('bank', ''),
+            transaction_data.get('author', ''),
+            transaction_data.get('comment', '')
+        ]
+    elif trans_type == 'expense':
+        target_cols = EXPENSE_COLS
+        # Порядок колонок для РАСХОДА: Дата, Сумма, Процедура, Автор, Комментарий
+        row_data = [
+            transaction_data.get('date', ''),
+            transaction_data.get('amount', ''),
+            '', # Колонка "Процедура" остается пустой
+            transaction_data.get('author', ''),
+            transaction_data.get('comment', '') # comment из бота идет в "Комментарий"
+        ]
+    else:
+        logger.error(f"Неизвестный тип транзакции: '{trans_type}'")
         return None
 
     try:
-        worksheet = spreadsheet.worksheet(pet_name)
-        logger.info(f"Найден существующий лист: {pet_name}")
-    except WorksheetNotFound:
-        # Создаем новый лист если не найден
-        logger.info(f"Лист '{pet_name}' не найден, создаю новый...")
-        try:
-            if transaction_data.get('type') == 'income':
-                worksheet = spreadsheet.add_worksheet(title=pet_name, rows="100", cols="10")
-                worksheet.append_row(INCOME_HEADERS)
-                logger.info(f"Создан новый лист для приходов: {pet_name}")
-            else: # expense
-                worksheet = spreadsheet.add_worksheet(title=pet_name, rows="100", cols="10")
-                worksheet.append_row(EXPENSE_HEADERS)
-                logger.info(f"Создан новый лист для расходов: {pet_name}")
-        except Exception as e:
-            logger.error(f"Ошибка создания листа: {e}")
-            return None
-
-    # Формируем строку для записи
-    try:
-        if transaction_data.get('type') == 'income':
-            row_to_add = [
-                transaction_data.get('date', ''),
-                transaction_data.get('bank', ''),
-                transaction_data.get('amount', ''),
-                transaction_data.get('comment', ''),
-                transaction_data.get('author', '')
-            ]
-        else: # expense
-            row_to_add = [
-                transaction_data.get('pet_name', ''),
-                transaction_data.get('date', ''),
-                transaction_data.get('amount', ''),
-                transaction_data.get('comment', ''),
-                transaction_data.get('author', '')
-            ]
-
-        # Добавляем timestamp для отладки
-        logger.info(f"Добавляем строку: {row_to_add}")
+        col_values = worksheet.col_values(target_cols["check_col_index"])
+        next_row = len(col_values) + 1
+        if next_row < 4: next_row = 4
         
-        worksheet.append_row(row_to_add)
-        logger.info(f"Запись успешно добавлена для питомца '{pet_name}'")
+        write_range = f'{target_cols["start"]}{next_row}:{target_cols["end"]}{next_row}'
+        worksheet.update(write_range, [row_data], value_input_option='USER_ENTERED')
         
-        # Возвращаем ссылку на лист
+        logger.info(f"✅ Запись добавлена на лист '{worksheet.title}', диапазон {write_range}")
         return get_spreadsheet_link(spreadsheet, worksheet)
-        
-    except APIError as e:
-        logger.error(f"Ошибка API Google Sheets: {e}")
-        return None
     except Exception as e:
-        logger.error(f"Неожиданная ошибка при добавлении строки: {e}")
+        logger.error(f"⚠️ Ошибка при записи данных на лист '{worksheet.title}': {e}", exc_info=True)
         return None
