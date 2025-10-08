@@ -41,27 +41,25 @@ logger = logging.getLogger(__name__)
 def build_summary_text(data: dict) -> str:
     """Формирует красивый итоговый текст по операции для пользователя."""
     ud = data
-    # Определяем тип операции с эмодзи
     type_str = '📈 *Доход*' if ud.get('type') == 'income' else '🛍️ *Расход*'
 
-    # Собираем части сообщения
-    summary_parts = [
-        f"Тип: {type_str}",
-        f"Подопечный: *{ud.get('pet_name', '...')}*",
-        f"Дата: *{ud.get('date', '...')}*",
-        f"Сумма: *{ud.get('amount', '...')} руб*.",
-    ]
+    summary_parts = [f"Тип: {type_str}"]
 
     # Добавляем поля в зависимости от типа операции
     if ud.get('type') == 'income':
         summary_parts.extend([
+            f"Подопечный: *{ud.get('pet_name', '...')}*",
+            f"Дата: *{ud.get('date', '...')}*",
+            f"Сумма: *{ud.get('amount', '...')} руб*.",
             f"Банк: *{ud.get('bank', '...')}*",
             f"Отправитель: *{ud.get('author', '...')}*"
         ])
     else:  # expense
         summary_parts.extend([
+            f"Дата: *{ud.get('date', '...')}*",
+            f"Сумма: *{ud.get('amount', '...')} руб*.",
             f"Назначение: *{ud.get('procedure', '...')}*",
-            f"Продавец: *{ud.get('author', '...')}*"
+            f"Поставщик: *{ud.get('author', '...')}*"
         ])
 
     if ud.get('comment'):
@@ -75,7 +73,6 @@ async def _show_summary(update: Update, context: ContextTypes.DEFAULT_TYPE, text
     summary_text = build_summary_text(context.user_data)
     full_text = f"{text_prefix}\n\n{summary_text}"
 
-    # Определяем, как отправить или отредактировать сообщение
     query = update.callback_query
     if query:
         await query.edit_message_text(
@@ -90,10 +87,7 @@ async def _show_summary(update: Update, context: ContextTypes.DEFAULT_TYPE, text
 # --- Обработчики команд ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    Начинает диалог: приветствует, очищает данные и запрашивает тип операции.
-    Работает как для команды /start, так и для callback-кнопки перезапуска.
-    """
+    """Начинает диалог: приветствует, очищает данные и запрашивает тип операции."""
     context.user_data.clear()
     query = update.callback_query
     user_name = update.effective_user.first_name
@@ -145,6 +139,15 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "Я умею распознавать данные с фото чеков и скриншотов, чтобы вам не пришлось вводить всё вручную."
     )
     await update.message.reply_text(help_text, parse_mode='Markdown')
+
+
+async def handle_invalid_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Отправляет сообщение об ошибке, если формат ввода не соответствует ожидаемому."""
+    if update.message:
+        await update.message.reply_text(
+            "Ой, что-то пошло не так. 😵‍💫 Похоже, я ожидал другой формат данных.\n\n"
+            "Пожалуйста, попробуйте ещё раз или используйте /cancel для отмены."
+        )
 
 
 # --- Обработчики состояний диалога ---
@@ -238,10 +241,9 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
                     disable_web_page_preview=True,
                     reply_markup=get_restart_keyboard()
                 )
-                # Переходим в состояние ожидания рестарта, не завершая диалог
                 return STATE_DONE
             else:
-                error_text = "❌ Не удалось сохранить данные. Что-то пошло не так с таблицей. Пожалуйста, попробуйте снова через некоторое время."
+                error_text = "❌ Не удалось сохранить данные. Что-то пошло не так с таблицей. Пожалуйста, попробуйте снова."
                 await query.edit_message_text(error_text)
 
         except Exception as e:
@@ -249,7 +251,6 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
             error_text = "❌ Ошибка при сохранении. Пожалуйста, свяжитесь с администратором."
             await query.edit_message_text(error_text)
 
-        # Завершаем диалог только в случае ошибки сохранения
         context.user_data.clear()
         return ConversationHandler.END
 
@@ -288,7 +289,7 @@ async def handle_editing_choice(update: Update, context: ContextTypes.DEFAULT_TY
     field_labels = {
         'pet_name': 'имя подопечного', 'date': 'дату (в формате ДД.ММ.ГГГГ)',
         'amount': 'сумму (например, 123.45)', 'bank': 'название банка',
-        'author': 'отправителя или продавца', 'procedure': 'назначение'
+        'author': 'отправитель', 'procedure': 'назначение'
     }
     prompt_text = f"Хорошо, введите новое значение для поля *'{field_labels.get(field_to_edit, field_to_edit)}'*:"
     await query.edit_message_text(prompt_text, parse_mode='Markdown')
@@ -305,10 +306,8 @@ async def handle_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     new_value = update.message.text.strip()
 
-    # Валидация введённых данных
     if field == 'amount':
         try:
-            # Очищаем от всего, кроме цифр, точки и запятой, и приводим к float
             cleaned_value = re.sub(r'[^\d,.]', '', new_value).replace(',', '.')
             context.user_data[field] = float(cleaned_value)
         except (ValueError, TypeError):
@@ -317,7 +316,6 @@ async def handle_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 parse_mode='Markdown'
             )
             return STATE_AWAITING_EDIT_VALUE
-
     elif field == 'date':
         if not re.match(r'^\d{2}\.\d{2}\.\d{4}$', new_value):
             await update.message.reply_text(
@@ -348,18 +346,42 @@ def setup_handlers():
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
-            STATE_AWAITING_TYPE: [CallbackQueryHandler(handle_type, pattern='^(income|expense)$')],
-            STATE_AWAITING_PET: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_pet)],
-            STATE_AWAITING_PHOTO: [MessageHandler(filters.PHOTO, handle_photo)],
-            STATE_CONFIRMATION: [CallbackQueryHandler(handle_confirmation, pattern='^(save|edit|add_comment|cancel)$')],
-            STATE_EDITING_CHOICE: [CallbackQueryHandler(handle_editing_choice)],
-            STATE_AWAITING_EDIT_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_value)],
-            STATE_AWAITING_COMMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_comment)],
-            STATE_DONE: [CallbackQueryHandler(start, pattern='^restart_flow$')]
+            STATE_AWAITING_TYPE: [
+                CallbackQueryHandler(handle_type, pattern='^(income|expense)$'),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_invalid_input)
+            ],
+            STATE_AWAITING_PET: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_pet),
+                MessageHandler(filters.ALL & ~filters.COMMAND & ~filters.TEXT, handle_invalid_input)
+            ],
+            STATE_AWAITING_PHOTO: [
+                MessageHandler(filters.PHOTO, handle_photo),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_invalid_input)
+            ],
+            STATE_CONFIRMATION: [
+                CallbackQueryHandler(handle_confirmation, pattern='^(save|edit|add_comment|cancel)$'),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_invalid_input)
+            ],
+            STATE_EDITING_CHOICE: [
+                CallbackQueryHandler(handle_editing_choice),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_invalid_input)
+            ],
+            STATE_AWAITING_EDIT_VALUE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_value),
+                MessageHandler(filters.ALL & ~filters.COMMAND & ~filters.TEXT, handle_invalid_input)
+            ],
+            STATE_AWAITING_COMMENT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_comment),
+                MessageHandler(filters.ALL & ~filters.COMMAND & ~filters.TEXT, handle_invalid_input)
+            ],
+            STATE_DONE: [
+                CallbackQueryHandler(start, pattern='^restart_flow$'),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_invalid_input)
+            ]
         },
         fallbacks=[
             CommandHandler('cancel', cancel),
-            CommandHandler('start', start), # Позволяет перезапустить диалог на любом этапе
+            CommandHandler('start', start),
         ]
     )
 
