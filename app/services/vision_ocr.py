@@ -1,42 +1,63 @@
-# app/services/vision_ocr.py
-
 import logging
+import os
 from google.cloud import vision
-from google.api_core.exceptions import GoogleAPICallError, PermissionDenied
+from google.api_core.exceptions import GoogleAPICallError, PermissionDenied, InvalidArgument
 
-# ... (код инициализации клиента остается без изменений) ...
+logger = logging.getLogger(__name__)
+
+# Инициализация клиента с проверкой credentials
 try:
-    vision_client = vision.ImageAnnotatorClient()
-    logging.info("Google Vision client initialized successfully.")
+    # Проверяем наличие файла credentials в корне проекта
+    credentials_path = "credentials.json"
+    if os.path.exists(credentials_path):
+        vision_client = vision.ImageAnnotatorClient.from_service_account_file(credentials_path)
+        logger.info(f"Google Vision client initialized with {credentials_path}")
+    else:
+        logger.error(f"Файл {credentials_path} не найден в корне проекта!")
+        vision_client = None
+        
 except Exception as e:
     vision_client = None
-    logging.error(f"Could not initialize Google Vision client: {e}")
+    logger.error(f"Could not initialize Google Vision client: {e}")
 
 async def recognize_text(image_bytes: bytes) -> str | None:
+    """Распознает текст с изображения с улучшенной обработкой ошибок."""
     if not vision_client:
-        logging.error("Vision client is not available.")
-        return "КЛИЕНТ VISION НЕ ИНИЦИАЛИЗИРОВАН"
+        error_msg = "Клиент Vision не инициализирован. Проверьте credentials.json"
+        logger.error(error_msg)
+        return error_msg
 
     try:
         image = vision.Image(content=image_bytes)
         response = vision_client.text_detection(image=image)
 
         if response.error.message:
-            logging.error(f'Vision API error: {response.error.message}')
-            # Возвращаем саму ошибку, чтобы увидеть её в боте
-            return f"ОШИБКА VISION API: {response.error.message}"
+            error_msg = f'Ошибка Vision API: {response.error.message}'
+            logger.error(error_msg)
+            return error_msg
 
-        # Если текст пустой, вернем специальное сообщение
-        if not response.full_text_annotation.text:
-            return None
+        texts = response.text_annotations
+        if not texts:
+            return "Текст не обнаружен на изображении"
 
-        return response.full_text_annotation.text
+        # Возвращаем весь распознанный текст
+        full_text = texts[0].description
+        logger.info(f"Успешно распознано {len(full_text)} символов")
+        return full_text
 
     except PermissionDenied as e:
-        logging.error(f"Permission Denied: {e}")
-        # Это самая частая ошибка при проблемах с ключом
-        return f"ОТКАЗАНО В ДОСТУПЕ (Permission Denied): Проверьте ваш ключ API. {e.message}"
-    
+        error_msg = f"Доступ запрещен: {e}. Проверьте права сервисного аккаунта."
+        logger.error(error_msg)
+        return error_msg
+    except InvalidArgument as e:
+        error_msg = f"Неверный аргумент: {e}. Проверьте формат изображения."
+        logger.error(error_msg)
+        return error_msg
     except GoogleAPICallError as e:
-        logging.error(f"An API error occurred: {e}")
-        return f"ОШИБКА GOOGLE API: {e.message}"
+        error_msg = f"Ошибка Google API: {e}"
+        logger.error(error_msg)
+        return error_msg
+    except Exception as e:
+        error_msg = f"Неожиданная ошибка: {e}"
+        logger.error(error_msg)
+        return error_msg

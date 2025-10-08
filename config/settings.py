@@ -1,11 +1,18 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings
+import os
 
 class Settings(BaseSettings):
-    # Указываем, что переменные будут браться из файла .env
-    model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8')
-
-    # Обязательная переменная - токен для Telegram бота
+    """Настройки приложения из переменных окружения."""
     telegram_token: str
+    
+    # credentials.json лежит в корне проекта, не нужно указывать в .env
+    @property
+    def google_credentials_path(self) -> str:
+        return "credentials.json"
+    
+    class Config:
+        env_file = ".env"
+        case_sensitive = False
 
-# Создаем экземпляр настроек, который будем использовать в проекте
+# Создаем глобальный экземпляр настроек
 settings = Settings()
