@@ -75,7 +75,7 @@ def _find_or_create_worksheet(spreadsheet: gspread.Spreadsheet, pet_name: str) -
 
 # --- ЛОГИКА ЗАПИСИ ДАННЫХ ---
 def write_transaction(transaction_data: dict) -> str | None:
-    """Записывает транзакцию в Google Sheets согласно финальной структуре."""
+    """Записывает транзакцию в Google Sheets согласно финальной структуре и возвращает ссылку на лист."""
     if not os.path.exists(CREDENTIALS_FILE):
         logger.critical(f"КРИТИЧЕСКАЯ ОШИБКА: Файл {CREDENTIALS_FILE} не найден!")
         return None
@@ -131,8 +131,12 @@ def write_transaction(transaction_data: dict) -> str | None:
         write_range = f'{target_cols["start"]}{next_row}:{target_cols["end"]}{next_row}'
         worksheet.update(write_range, [row_data], value_input_option='USER_ENTERED')
         
+        # Получаем ссылку на лист
+        sheet_link = get_spreadsheet_link(spreadsheet, worksheet)
+        
         logger.info(f"✅ Запись добавлена на лист '{worksheet.title}', диапазон {write_range}")
-        return get_spreadsheet_link(spreadsheet, worksheet)
+        logger.info(f"📎 Ссылка на лист: {sheet_link}")
+        return sheet_link
     except Exception as e:
         logger.error(f"⚠️ Ошибка при записи данных на лист '{worksheet.title}': {e}", exc_info=True)
         return None

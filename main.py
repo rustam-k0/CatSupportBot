@@ -7,8 +7,8 @@ from fastapi import FastAPI
 from telegram.ext import Application
 
 from config.settings import settings
-# Импортируем только необходимые обработчики
-from app.bot.handlers import conv_handler, help_handler
+# Импортируем setup_handlers вместо конкретных обработчиков
+from app.bot.handlers import setup_handlers
 
 # Настройка логирования
 logging.basicConfig(
@@ -37,6 +37,9 @@ try:
     ptb_app = ptb_app_builder.build()
     
     # --- Регистрация обработчиков ---
+    # Получаем обработчики из функции setup_handlers
+    conv_handler, help_handler = setup_handlers()
+    
     # Главный обработчик - это диалог. Остальные команды (как /help) добавляются отдельно.
     # Это предотвращает конфликты, когда /start или /cancel могут быть перехвачены до диалога.
     ptb_app.add_handler(conv_handler)
