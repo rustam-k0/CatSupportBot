@@ -1,17 +1,15 @@
 # app/models/schemas.py
-
 from pydantic import BaseModel, field_validator
-from datetime import date
+from datetime import date as date_type
 
 class Transaction(BaseModel):
     """Базовая модель транзакции."""
     pet_name: str
-    date: date
+    date: date_type
     amount: float
     comment: str | None = None
     author: str | None = None
 
-    # Валидатор для поля amount, чтобы сумма была положительной
     @field_validator('amount')
     @classmethod
     def amount_must_be_positive(cls, v: float) -> float:
@@ -24,5 +22,5 @@ class Income(Transaction):
     bank: str | None = None
 
 class Expense(Transaction):
-    """Модель для расхода."""
-    pass
+    """Модель для расхода с дополнительным полем 'procedure'."""
+    procedure: str | None = None # НОВОЕ ПОЛЕ
