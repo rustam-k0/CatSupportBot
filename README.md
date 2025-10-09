@@ -125,6 +125,7 @@ HvostatyeSosediBot/
 ├── Dockerfile               # Опционально для контейнеризации
 └── main.py                  # Точка входа FastAPI-приложения
 └── credentials.json
+└── .env
 ```
 
 -----
