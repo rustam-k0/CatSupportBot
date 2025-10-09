@@ -56,6 +56,7 @@ def build_summary_text(data: dict) -> str:
         ])
     else:  # expense
         summary_parts.extend([
+            f"Подопечный: *{ud.get('pet_name', '...')}*", 
             f"Дата: *{ud.get('date', '...')}*",
             f"Сумма: *{ud.get('amount', '...')} руб*.",
             f"Назначение: *{ud.get('procedure', '...')}*",
