@@ -3,8 +3,9 @@
 import logging
 import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from telegram.ext import Application
+from telegram import Update
 
 from config.settings import settings
 from app.bot.handlers import setup_handlers
@@ -44,24 +45,38 @@ except Exception as e:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Управляет жизненным циклом: запускает и останавливает бота вместе с FastAPI."""
-    logger.info("Запуск Telegram-бота в режиме polling...")
-    try:
+    # На Render используем вебхуки вместо polling
+    webhook_url = os.getenv("RENDER_EXTERNAL_URL", "") + "/webhook"
+    
+    if webhook_url and not webhook_url.startswith("http"):
+        webhook_url = f"https://{webhook_url}"
+    
+    if webhook_url and "render.com" in webhook_url:
+        logger.info(f"Настройка вебхука для Render: {webhook_url}")
+        await ptb_app.initialize()
+        await ptb_app.bot.set_webhook(webhook_url)
+        await ptb_app.start()
+        logger.info("Бот успешно запущен в режиме вебхука")
+    else:
+        # Локальная разработка с polling
+        logger.info("Запуск Telegram-бота в режиме polling (локальная разработка)...")
         await ptb_app.initialize()
         await ptb_app.start() 
-        await ptb_app.updater.start_polling()
-        logger.info("Бот успешно запущен")
-        
-        yield
-        
-    finally:
-        logger.info("Остановка Telegram-бота...")
-        try:
+        if ptb_app.updater:
+            await ptb_app.updater.start_polling()
+        logger.info("Бот успешно запущен в режиме polling")
+    
+    yield
+    
+    logger.info("Остановка Telegram-бота...")
+    try:
+        if ptb_app.updater:
             await ptb_app.updater.stop()
-            await ptb_app.stop()
-            await ptb_app.shutdown()
-            logger.info("Бот успешно остановлен")
-        except Exception as e:
-            logger.error(f"Ошибка при остановке бота: {e}", exc_info=True)
+        await ptb_app.stop()
+        await ptb_app.shutdown()
+        logger.info("Бот успешно остановлен")
+    except Exception as e:
+        logger.error(f"Ошибка при остановке бота: {e}", exc_info=True)
 
 # Создаем FastAPI приложение
 app = FastAPI(
@@ -70,18 +85,55 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+@app.post("/webhook")
+async def webhook(request: Request):
+    """Эндпоинт для получения обновлений от Telegram через вебхук."""
+    try:
+        data = await request.json()
+        update = Update.de_json(data, ptb_app.bot)
+        await ptb_app.process_update(update)
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error(f"Ошибка обработки вебхука: {e}")
+        return {"status": "error", "message": str(e)}
+
 @app.get("/", summary="Статус бота")
-def read_root():
+async def read_root():
     """Корневой эндпоинт для проверки, что веб-сервер запущен."""
-    return {
-        "status": "Bot is running via FastAPI", 
-        "bot_running": ptb_app.updater.running if ptb_app.updater else False
-    }
+    try:
+        webhook_info = await ptb_app.bot.get_webhook_info()
+        return {
+            "status": "Bot is running via FastAPI",
+            "webhook_url": webhook_info.url,
+            "webhook_set": bool(webhook_info and webhook_info.url),
+            "pending_updates": webhook_info.pending_update_count if webhook_info else 0
+        }
+    except Exception as e:
+        logger.error(f"Ошибка получения информации о вебхуке: {e}")
+        return {"status": "Bot is running", "error": str(e)}
 
 @app.get("/health", summary="Проверка здоровья сервиса")
 def health_check():
     """Эндпоинт для систем мониторинга."""
-    return {"status": "healthy", "bot_running": ptb_app.updater.running if ptb_app.updater else False}
+    return {"status": "healthy"}
+
+@app.get("/set_webhook", summary="Установить вебхук вручную")
+async def set_webhook_manual():
+    """Эндпоинт для ручной установки вебхука (для отладки)."""
+    try:
+        webhook_url = os.getenv("RENDER_EXTERNAL_URL", "") + "/webhook"
+        if webhook_url and not webhook_url.startswith("http"):
+            webhook_url = f"https://{webhook_url}"
+        
+        result = await ptb_app.bot.set_webhook(webhook_url)
+        return {
+            "status": "webhook_set", 
+            "url": webhook_url,
+            "success": result
+        }
+    except Exception as e:
+        logger.error(f"Ошибка установки вебхука: {e}")
+        return {"status": "error", "message": str(e)}
 
 # Если файл запускается напрямую (для локальной разработки)
 if __name__ == "__main__":
