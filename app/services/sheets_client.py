@@ -1,5 +1,3 @@
-# app/services/sheets_client.py
-
 import gspread
 import os
 from gspread.exceptions import APIError, WorksheetNotFound
