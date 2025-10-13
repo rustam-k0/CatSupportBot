@@ -26,8 +26,6 @@ def _get_date_patterns() -> list:
     return [
         {'tier': 0, 'desc': 'Дата операции с временем (текстовая, с ключом)', 'regex': r'(?:Операция\s+совершена|Дата\s+операции|Товарный\sчек\s.*?за)[:\s]*(\d{1,2})\s+(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+(\d{4})', 'type': 'textual_ru', 'flags': re.IGNORECASE},
         {'tier': 0, 'desc': 'Дата операции с временем (числовая, с ключом)', 'regex': r'(?:Операция\s+совершена|Дата\s+операции)[:\s]*(\d{2}[./-]\d{2}[./-]\d{2,4})(?:\s+в\s+\d{1,2}:\d{2})?', 'type': 'numeric', 'flags': re.IGNORECASE},
-        {'tier': 1, 'desc': 'Дата рядом с суммой или переводом', 'regex': r'(?:Перевод|Зачисление|Списание)\s+от?\s*(\d{1,2})\s+(января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+(\d{4})', 'type': 'textual_ru', 'flags': re.IGNORECASE},
-        {'tier': 1, 'desc': 'Дата рядом с суммой или переводом (числовая)', 'regex': r'(?:Перевод|Зачисление|Списание)\s+от?\s*(\d{2}[./-]\d{2}[./-]\d{2,4})', 'type': 'numeric', 'flags': re.IGNORECASE},
         {'tier': 3, 'desc': 'Любая дата в числовом формате (ДД.ММ.ГГГГ)', 'regex': r'\b(\d{2}[./-]\d{2}[./-]\d{2,4})\b', 'type': 'numeric', 'flags': 0}
     ]
 
@@ -36,36 +34,26 @@ def _get_amount_patterns() -> list:
     CURRENCY_REGEX = r'(?:Р|₽|руб\.?|RUB|P)'
     return [
         {'tier': 0, 'desc': 'Ключевое слово "Итого сумма чека"', 'regex': fr'(?:Итого\sсумма\sчека)\s*[:\s.]*\s*{AMOUNT_REGEX}', 'flags': re.IGNORECASE},
-        {'tier': 1, 'desc': 'Сумма с явным знаком "+" и символом валюты', 'regex': fr'\+\s*{AMOUNT_REGEX}\s*{CURRENCY_REGEX}', 'flags': re.IGNORECASE},
         {'tier': 2, 'desc': 'Ключевое слово "Сумма/Итого/Всего/Долг"', 'regex': fr'(?:Сумма|Итого|Всего|К\sоплате|Пополнение|Перевод|Долг\sпосле\sоплаты)\s*[:\s.]*\s*{AMOUNT_REGEX}', 'flags': re.IGNORECASE},
         {'tier': 4, 'desc': 'Число с явным символом валюты', 'regex': fr'\b{AMOUNT_REGEX}\s*{CURRENCY_REGEX}\b', 'flags': re.IGNORECASE},
-        {'tier': 5, 'desc': 'Число с копейками (формат: 1234.56)', 'regex': r'\b(\d(?:\s?\d)*[,.]\d{2})\b', 'flags': 0},
     ]
 
 def _get_bank_patterns() -> list:
-    BANK_KEYWORDS = {'Т-Банк': ['т-банк', 'тбанк', 'тинькофф', 'tinkoff', 't-bank'], 'Сбербанк': ['сбербанк', 'сбер', 'sber', 'sberbank'], 'Альфа-Банк': ['альфа-банк', 'альфа', 'alfa', 'alfabank'], 'ВТБ': ['втб', 'vtb']}
-    return [{'tier': 1, 'desc': f'Поиск по ключевым словам для "{bank_name}"', 'regex': r'\b(' + '|'.join(keywords) + r')\b', 'bank_name': bank_name, 'flags': re.IGNORECASE} for bank_name, keywords in BANK_KEYWORDS.items()]
+    BANK_KEYWORDS = {'Т-Банк': ['т-банк', 'тбанк', 'тинькофф', 'tinkoff', 't-bank'], 'Сбербанк': ['сбербанк', 'сбер', 'sber', 'sberbank'], 'Альфа-Банк': ['альфа-банк', 'альфа', 'alfa', 'alfabank']}
+    return [{'tier': 1, 'regex': r'\b(' + '|'.join(keywords) + r')\b', 'bank_name': bank_name, 'flags': re.IGNORECASE} for bank_name, keywords in BANK_KEYWORDS.items()]
 
 def _get_author_patterns(transaction_type: str) -> list:
     AUTHOR_NAME_REGEX = r'([А-ЯЁ][а-яёA-Za-z\s."«»-]+?)'
     if transaction_type in ['income', 'transaction']:
-        return [
-            {'tier': 1, 'desc': 'Ключ "Отправитель", "Плательщик", "От кого"', 'regex': fr'(?:Отправитель|Плательщик|От\sкого)\s*[:\s\n]*{AUTHOR_NAME_REGEX}(?=\n|$)', 'flags': re.IGNORECASE},
-            {'tier': 3, 'desc': 'Имя формата (Имя О.) после строки с суммой', 'regex': r'\b(?:\d[\d\s,.]*)\s*(?:Р|₽|руб\.?|RUB|P)[\s\n]+([А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+)?\s+[А-ЯЁ]\.)', 'flags': re.IGNORECASE},
-            {'tier': 5, 'desc': 'Формат "Имя О." или "Имя Отчество О."', 'regex': r'\b([А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+){0,2}\s+[А-ЯЁ]\.)\b', 'flags': 0},
-        ]
+        return [{'tier': 5, 'desc': 'Формат "Имя О." или "Имя Отчество О."', 'regex': r'\b([А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+){0,2}\s+[А-ЯЁ]\.)\b', 'flags': 0}]
     else:
-        return [
-            {'tier': 1, 'desc': 'Название в кавычках: «ООО Ромашка»', 'regex': r'[«"]([^»"]{3,})[»"]', 'flags': 0},
-            {'tier': 1, 'desc': 'Ключ "Получатель", "Продавец"', 'regex': fr'(?:Получатель|Продавец|Организация)\s*[:\s\n]*{AUTHOR_NAME_REGEX}(?=\n|$)', 'flags': re.IGNORECASE},
-            {'tier': 2, 'desc': 'Орг. форма: ООО, ИП, АО', 'regex': r'\b(?:ООО|ИП|АО|ПАО)\s+[«"]?([^»"\n]{3,40})[»"]?', 'flags': re.IGNORECASE},
-        ]
+        return [{'tier': 2, 'desc': 'Орг. форма: ООО, ИП, АО', 'regex': r'\b(?:ООО|ИП|АО|ПАО)\s+[«"]?([^»"\n]{3,40})[»"]?', 'flags': re.IGNORECASE}]
 
 def _get_comment_patterns() -> list:
-    return [{'tier': 1, 'desc': 'Поиск по ключевым словам', 'regex': r'(?:Комментарий|Примечание|Назначение\sплатежа|Note|Comment|Description)\s*[:\s\n]*(.+?)(?=\n\n|$|\n\s*—{3,})', 'flags': re.IGNORECASE | re.DOTALL}]
+    return [{'tier': 1, 'regex': r'(?:Комментарий|Примечание|Назначение)\s*[:\s\n]*(.+?)(?=\n\n|$)', 'flags': re.IGNORECASE | re.DOTALL}]
 
 def _get_procedure_patterns() -> list:
-    return [{'tier': 1, 'desc': 'Блок текста между заголовком таблицы и итоговой суммой', 'regex': r'(?:Наименование.*?Ст-ть)\s*\n(.*?)(?=\n\s*Итого\sсумма\sчека)', 'flags': re.DOTALL | re.IGNORECASE}]
+    return [{'tier': 1, 'regex': r'(?:Наименование.*?Ст-ть)\s*\n(.*?)(?=\n\s*Итого)', 'flags': re.DOTALL | re.IGNORECASE}]
 
 def parse_date(text: str) -> str | None:
     patterns = _get_date_patterns()
@@ -92,65 +80,70 @@ def parse_amount(text: str, transaction_type: str) -> float | None:
     return None
 
 def parse_bank(text: str) -> str | None:
-    search_text = text.lower()
     for p in _get_bank_patterns():
-        if re.search(p['regex'], search_text, p['flags']): return p['bank_name']
+        if re.search(p['regex'], text.lower(), p['flags']): return p['bank_name']
     return None
 
 def parse_author(text: str, transaction_type: str) -> str | None:
-    STOPWORDS = ['улица', 'москва', 'россия', 'кассир', 'чек', 'операция', 'платеж', 'карта', 'счет']
     for p in _get_author_patterns(transaction_type):
         for match in re.finditer(p['regex'], text, p['flags']):
-            author = _clean_author_string(' '.join(filter(None, match.groups())).strip())
-            if 2 < len(author) < 50 and not any(stop in author.lower() for stop in STOPWORDS) and not re.fullmatch(r'[\d\s.,]+', author):
-                return author
+            author = _clean_author_string(match.group(1))
+            if len(author) > 2: return author
     return None
 
 def parse_comment(text: str) -> str | None:
-    for p in _get_comment_patterns():
-        if match := re.search(p['regex'], text, p['flags']):
-            comment = match.group(1).strip().replace('\n', ' ')
-            if len(comment) > 2: return comment[:200]
+    if match := re.search(_get_comment_patterns()[0]['regex'], text, _get_comment_patterns()[0]['flags']):
+        return match.group(1).strip().replace('\n', ' ')
     return None
 
 def parse_procedure(text: str) -> str | None:
-    for p in _get_procedure_patterns():
-        if match := re.search(p['regex'], text, p['flags']):
-            lines = [re.sub(r'[\s\d,.]+(руб\.?)?$', '', line).strip() for line in match.group(1).strip().split('\n') if line.strip()]
-            if clean_lines := [re.sub(r'\s*\([^)]*\)', '', l).strip() for l in lines if len(l) > 2 and re.search(r'[а-яА-Я]', l)]:
-                return '; '.join(clean_lines)
+    if match := re.search(_get_procedure_patterns()[0]['regex'], text, _get_procedure_patterns()[0]['flags']):
+        lines = [re.sub(r'[\s\d,.]+(руб\.?)?$', '', l).strip() for l in match.group(1).strip().split('\n') if l.strip()]
+        return '; '.join(lines)
     return None
 
-def _parse_multiple_transactions(text: str) -> list[dict]:
-    pattern = re.compile(r'([А-ЯЁа-яё\s]+\s[А-ЯЁ]\.)\n(?:Transfers|Top-ups).*?\+\s*([\d\s,.]+)\s*Р', re.MULTILINE)
+def _parse_multiple_transactions(text: str) -> dict:
+    result = {}
+    date_match = re.search(r'([A-Za-z]{3,}\s\d{4})', text)
+    result['period'] = date_match.group(1) if date_match else "не найден"
+    income_match = re.search(r'([\d\s,.]+\s*Р)\s*\n\s*Income', text, re.IGNORECASE)
+    result['total_income'] = income_match.group(1).strip() if income_match else "не найден"
+    
     transactions = []
+    pattern = re.compile(r'([А-ЯЁа-яё\s]+\s[А-ЯЁ]\.)\s*\n([\s\S]*?)(?=(?:[А-ЯЁа-яё\s]+\s[А-ЯЁ]\.)|$)')
     for match in pattern.finditer(text):
-        author, amount_str = match.groups()
-        if (amount := _clean_amount_string(amount_str)):
-            transactions.append({'author': author.strip(), 'amount': amount})
-    return transactions
+        sender, block = match.group(1).strip(), match.group(2)
+        tx_data = {'sender': sender}
+        if amount_match := re.search(r'(\+\s*[\d\s,.]+\s*Р)', block):
+            tx_data['amount_str'] = amount_match.group(1).strip()
+            tx_data['amount'] = _clean_amount_string(amount_match.group(1))
+        if type_match := re.search(r'(Transfers|Top-ups)', block, re.IGNORECASE):
+            tx_data['type'] = 'Перевод' if type_match.group(1).lower() == 'transfers' else 'Пополнение'
+        if card_match := re.search(r'(Black)', block, re.IGNORECASE):
+            tx_data['card'] = card_match.group(1)
+        
+        lines = [line.strip() for line in block.strip().split('\n')]
+        tags = [line for line in lines if re.match(r'^[А-ЯЁа-яё]+$', line) and line not in (tx_data.get('type'), tx_data.get('card'))]
+        if tags: tx_data['tag'] = ', '.join(tags)
+        
+        if tx_data.get('amount'): transactions.append(tx_data)
+    result['transactions'] = transactions
+    return result
 
 def parse_transaction_data(text: str, transaction_type: str) -> dict:
-    logger.info(f"🔍 Начинаем парсинг. Тип: {transaction_type.upper()}. Объем текста: {len(text)} символов.")
-    normalized_text = _normalize_text_for_search(text)
-    
+    logger.info(f"Начинаем парсинг. Тип: {transaction_type.upper()}.")
     if transaction_type == 'transaction':
-        result = {
-            "transactions": _parse_multiple_transactions(normalized_text),
-            "bank": parse_bank(normalized_text),
-            "comment": parse_comment(normalized_text)
-        }
+        parsed_details = _parse_multiple_transactions(text)
+        result = {"bank": parse_bank(text), **parsed_details}
     else:
+        normalized_text = _normalize_text_for_search(text)
         result = {
-            "date": parse_date(text),
-            "amount": parse_amount(text, transaction_type),
-            "author": parse_author(normalized_text, transaction_type),
-            "comment": parse_comment(normalized_text),
+            "date": parse_date(text), "amount": parse_amount(text, transaction_type),
+            "author": parse_author(normalized_text, transaction_type), "comment": parse_comment(normalized_text),
         }
         if transaction_type == 'income':
             result['bank'] = parse_bank(normalized_text)
         else:
             result['procedure'] = parse_procedure(text)
-    
-    logger.info(f"📊 Парсинг завершен. Итог: {result}")
+    logger.info(f"Парсинг завершен. Итог: {result}")
     return result
