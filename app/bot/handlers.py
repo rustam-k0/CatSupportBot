@@ -1,29 +1,27 @@
 import logging
 import re
+from datetime import datetime
 from telegram import Update
 from telegram.ext import (
     ContextTypes, CommandHandler, MessageHandler, filters,
     ConversationHandler, CallbackQueryHandler
 )
 
-# Внутренние импорты
 from app.bot.keyboards import (
     get_transaction_type_keyboard, get_confirmation_keyboard,
     get_editing_keyboard, get_restart_keyboard
 )
 from app.services.vision_ocr import recognize_text
-from app.services.data_parser import parse_date, parse_amount, parse_bank, parse_author, parse_procedure
+from app.services.data_parser import parse_date, parse_amount, parse_bank, parse_author, parse_procedure, parse_transaction_data
 from app.services.sheets_client import write_transaction
 from config.settings import settings
 
-# Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Состояния диалога (константы для читаемости)
 (
     STATE_AWAITING_TYPE,
     STATE_AWAITING_PET,
@@ -32,21 +30,16 @@ logger = logging.getLogger(__name__)
     STATE_EDITING_CHOICE,
     STATE_AWAITING_EDIT_VALUE,
     STATE_AWAITING_COMMENT,
-    STATE_DONE  # Финальное состояние после успешного сохранения
+    STATE_DONE
 ) = range(8)
 
-
-# --- Вспомогательные функции ---
-
 def build_summary_text(data: dict) -> str:
-    """Формирует красивый итоговый текст по операции для пользователя."""
     ud = data
-    type_str = '📈 *Доход*' if ud.get('type') == 'income' else '🛍️ *Расход*'
+    type_str = '📈 *Доход*' if ud.get('type') == 'income' else '🛍️ *Расход*' if ud.get('type') == 'expense' else '💸 *Транзакция*'
 
     summary_parts = [f"Тип: {type_str}"]
 
-    # Добавляем поля в зависимости от типа операции
-    if ud.get('type') == 'income':
+    if ud.get('type') in ['income', 'transaction']:
         summary_parts.extend([
             f"Подопечный: *{ud.get('pet_name', '...')}*",
             f"Дата: *{ud.get('date', '...')}*",
@@ -54,7 +47,7 @@ def build_summary_text(data: dict) -> str:
             f"Банк: *{ud.get('bank', '...')}*",
             f"Отправитель: *{ud.get('author', '...')}*"
         ])
-    else:  # expense
+    else:
         summary_parts.extend([
             f"Подопечный: *{ud.get('pet_name', '...')}*", 
             f"Дата: *{ud.get('date', '...')}*",
@@ -68,9 +61,7 @@ def build_summary_text(data: dict) -> str:
 
     return "\n".join(summary_parts)
 
-
 async def _show_summary(update: Update, context: ContextTypes.DEFAULT_TYPE, text_prefix: str):
-    """Универсальная функция для показа итоговой информации с кнопками подтверждения."""
     summary_text = build_summary_text(context.user_data)
     full_text = f"{text_prefix}\n\n{summary_text}"
 
@@ -84,11 +75,7 @@ async def _show_summary(update: Update, context: ContextTypes.DEFAULT_TYPE, text
             full_text, reply_markup=get_confirmation_keyboard(), parse_mode='Markdown'
         )
 
-
-# --- Обработчики команд ---
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Начинает диалог: приветствует, очищает данные и запрашивает тип операции."""
     context.user_data.clear()
     query = update.callback_query
     user_name = update.effective_user.first_name
@@ -96,7 +83,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     welcome_text = (
         f"Привет, {user_name}! 🐾 Я помогу вам вести учёт финансов.\n\n"
         "**Как это работает:**\n"
-        "1. Выберите тип операции: *Доход* или *Расход*.\n"
+        "1. Выберите тип операции: *Доход*, *Расход* или *Транзакции*.\n"
         "2. Укажите, к какому хвостику относится запись 🐈.\n"
         "3. Отправьте фото чека или скриншот перевода.\n\n"
         f"Я всё распознаю, а вы проверите. Готовые записи попадают в [общую таблицу]({settings.GOOGLE_SHEETS_LINK}).\n\n"
@@ -121,18 +108,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         )
     return STATE_AWAITING_TYPE
 
-
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Отменяет и завершает текущий диалог, очищая данные."""
     context.user_data.clear()
     await update.message.reply_text(
-        "Хорошо, операция отменена. Если передумаете, просто вызовите меня командой /start. Я всегда на связи! 😽"
+        "Хорошо, операция отменена. Если передумаете, просто вызовите меня командой /start."
     )
     return ConversationHandler.END
 
-
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Отправляет справочное сообщение по командам бота."""
     help_text = (
         "Чем могу помочь? 😼\n\n"
         "➡️ *Начать новую запись* — отправьте команду /start.\n"
@@ -141,20 +124,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
-
 async def handle_invalid_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Отправляет сообщение об ошибке, если формат ввода не соответствует ожидаемому."""
     if update.message:
         await update.message.reply_text(
             "Ой, что-то пошло не так. 😵‍💫 Похоже, я ожидал другой формат данных.\n\n"
             "Пожалуйста, попробуйте ещё раз или используйте /cancel для отмены."
         )
 
-
-# --- Обработчики состояний диалога ---
-
 async def handle_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обрабатывает выбор типа операции и запрашивает имя подопечного."""
     query = update.callback_query
     await query.answer()
     context.user_data['type'] = query.data
@@ -165,9 +142,7 @@ async def handle_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     )
     return STATE_AWAITING_PET
 
-
 async def handle_pet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Сохраняет имя подопечного и просит прислать фото."""
     pet_name = update.message.text.strip().capitalize()
     context.user_data['pet_name'] = pet_name
 
@@ -179,9 +154,7 @@ async def handle_pet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     )
     return STATE_AWAITING_PHOTO
 
-
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Получает фото, запускает OCR и парсинг данных."""
     await update.message.reply_text("Отличное фото! 🧐 Дайте мне пару секунд, я его изучу...")
 
     try:
@@ -200,14 +173,20 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
         ud = context.user_data
         transaction_type = ud.get('type')
-        ud['date'] = parse_date(recognized_text)
-        ud['amount'] = parse_amount(recognized_text, transaction_type)
-        ud['author'] = parse_author(recognized_text, transaction_type)
+        
+        if transaction_type == 'transaction':
+            ud['date'] = datetime.now().strftime("%d.%m.%Y")
+            parsed_data = parse_transaction_data(recognized_text, 'income')
+            ud.update(parsed_data)
+        else:
+            ud['date'] = parse_date(recognized_text)
+            ud['amount'] = parse_amount(recognized_text, transaction_type)
+            ud['author'] = parse_author(recognized_text, transaction_type)
 
-        if transaction_type == 'income':
-            ud['bank'] = parse_bank(recognized_text)
-        else:  # expense
-            ud['procedure'] = parse_procedure(recognized_text)
+            if transaction_type == 'income':
+                ud['bank'] = parse_bank(recognized_text)
+            else:
+                ud['procedure'] = parse_procedure(recognized_text)
 
         await _show_summary(update, context, "Готово! ✨ Вот что мне удалось распознать:")
         return STATE_CONFIRMATION
@@ -219,9 +198,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         )
         return STATE_AWAITING_PHOTO
 
-
 async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обрабатывает кнопки 'Сохранить', 'Исправить', 'Добавить комментарий', 'Отмена'."""
     query = update.callback_query
     await query.answer()
     action = query.data
@@ -274,9 +251,7 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     return STATE_CONFIRMATION
 
-
 async def handle_editing_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Определяет поле для редактирования и запрашивает новое значение."""
     query = update.callback_query
     await query.answer()
 
@@ -296,9 +271,7 @@ async def handle_editing_choice(update: Update, context: ContextTypes.DEFAULT_TY
     await query.edit_message_text(prompt_text, parse_mode='Markdown')
     return STATE_AWAITING_EDIT_VALUE
 
-
 async def handle_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Получает новое значение, валидирует его и возвращает к подтверждению."""
     field = context.user_data.get('field_to_edit')
     if not field:
         logger.warning("Попытка изменить значение без `field_to_edit` в user_data.")
@@ -332,23 +305,17 @@ async def handle_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await _show_summary(update, context, "Готово, поле обновлено! Давайте ещё раз всё проверим:")
     return STATE_CONFIRMATION
 
-
 async def handle_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Добавляет комментарий к операции и возвращает на экран подтверждения."""
     context.user_data['comment'] = update.message.text.strip()
     await _show_summary(update, context, "Комментарий добавлен! ✨ Теперь всё выглядит правильно?")
     return STATE_CONFIRMATION
 
-
-# --- Сборка обработчиков в ConversationHandler ---
-
 def setup_handlers():
-    """Создаёт и настраивает ConversationHandler для всего диалога."""
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
         states={
             STATE_AWAITING_TYPE: [
-                CallbackQueryHandler(handle_type, pattern='^(income|expense)$'),
+                CallbackQueryHandler(handle_type, pattern='^(income|expense|transaction)$'),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_invalid_input)
             ],
             STATE_AWAITING_PET: [
