@@ -139,7 +139,7 @@ def _get_author_patterns(transaction_type: str) -> list:
             {'tier': 4, 'desc': 'Английские термины: "From", "Sender"', 'regex': fr'(?:From|Sender)\s*[:\s\n]*{AUTHOR_NAME_REGEX}(?=\n|$)', 'flags': re.IGNORECASE},
             {'tier': 5, 'desc': 'Формат "Имя О." или "Имя Отчество О."', 'regex': r'\b([А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+){0,2}\s+[А-ЯЁ]\.)\b', 'flags': 0},
         ]
-    else:
+    else: # expense
         return [
             {'tier': 0, 'desc': 'Название организации в начале документа (над адресом)', 'regex': r'^(.*?)\n\s*(?:Адрес\sклиники|Адрес)', 'flags': re.MULTILINE},
             {'tier': 1, 'desc': 'Название в кавычках: «ООО Ромашка»', 'regex': r'[«"]([^»"]{3,})[»"]', 'flags': 0},
@@ -280,10 +280,11 @@ def parse_multiple_transactions(text: str) -> list[dict]:
     bank = parse_bank(text)
     transactions = []
 
+    # Corrected pattern to be more robust with currency symbols and amounts
     pattern = re.compile(
-        r'([А-ЯЁ][а-яё]+\s[А-ЯЁ]\.)'
-        r'[\s\S]*?'
-        r'\+([\d\s,]+\d{1,2})\s*Р',
+        r'([А-ЯЁ][а-яё]+\s+[А-ЯЁ]\.)'       # Author: e.g., "Тамирлан Ш."
+        r'[\s\S]*?'                       # Any characters (non-greedy) until the amount
+        r'\+([\d\s,.]*[\d])\s*(?:Р|₽)',    # Amount: e.g., "+200 ₽" or "+27 013,10 Р"
         re.IGNORECASE
     )
 
@@ -316,7 +317,7 @@ def parse_transaction_data(text: str, transaction_type: str) -> dict:
         result['bank'] = parse_bank(normalized_text)
         result['author'] = parse_author(normalized_text, transaction_type)
         result['comment'] = parse_comment(normalized_text)
-    else:
+    else: # expense
         result['procedure'] = parse_procedure(text)
         result['author'] = parse_author(text, transaction_type)
         result['comment'] = parse_comment(text)
