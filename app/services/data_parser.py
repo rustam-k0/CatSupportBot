@@ -8,7 +8,9 @@ def _clean_amount_string(s: str) -> float | None:
     if not isinstance(s, str):
         return None
     try:
+        # Удаляем все, кроме цифр, запятых и точек. Пробелы тоже убираем.
         cleaned = re.sub(r'[^\d,.]', '', s)
+        # Заменяем запятую на точку для корректного преобразования в float
         cleaned = cleaned.replace(',', '.')
         return float(cleaned)
     except (ValueError, TypeError):
@@ -25,6 +27,9 @@ def _clean_author_string(author: str) -> str:
     author = author.strip('.,;:"«» \n\t')
     author = re.sub(r'^(ООО|ИП|АО|ПАО|ЗАО|ОАО)\s+', '', author, flags=re.IGNORECASE).strip()
     author = author.strip('"«»')
+    # Добавляем точку в конце, если ее нет, для унификации
+    if not author.endswith('.'):
+        author += '.'
     return author
 
 def _get_date_patterns() -> list:
@@ -273,45 +278,53 @@ def parse_procedure(text: str) -> str | None:
 
 def parse_multiple_transactions(text: str) -> list[dict]:
     """
-    Parses a block of text to find multiple income transactions from a screenshot.
+    Парсит блок текста, чтобы найти несколько доходных транзакций со скриншота.
+    Логика основана на построчном анализе.
     """
     logger.info(f"🔍 Начинаем парсинг множественных транзакций. Объем текста: {len(text)} символов.")
     
     bank = parse_bank(text)
     transactions = []
+    lines = [line.strip() for line in text.split('\n') if line.strip()]
 
-    # This regex is designed to find blocks of text containing an author and an amount.
-    # It looks for a name in the format "Имя И." followed by any characters (including newlines),
-    # and then an amount like "+ 123.45 ₽". The non-greedy '.*?' is crucial.
-    pattern = re.compile(
-        # Group 1: Author name, e.g., "Тамирлан Ш."
-        r'([А-ЯЁ][а-яё]+\s+[А-ЯЁ]\.)'
-        # Non-greedy match for any characters (including newlines) between author and amount.
-        # This is constrained to prevent matching across the entire document.
-        r'.*?'
-        # The amount part: a literal '+', optional whitespace, then the amount string.
-        # Group 2: The amount string itself, e.g., "200" or "27 013,10".
-        r'\+\s*([\d\s,.]+)'
-        # Currency symbols are used as an anchor for the match but are not captured.
-        r'\s*₽',
-        re.DOTALL | re.IGNORECASE
-    )
+    # Паттерн для поиска суммы (начинается с "+", содержит цифры, пробелы, запятые/точки и заканчивается "Р" или "₽")
+    amount_pattern = re.compile(r'^\+\s*([\d\s,.]+)\s*(?:₽|Р)$')
+    # Паттерн для поиска имени (Имя Фамилия/Буква. - например, "Рустам Х" или "Тамирлан Ш.")
+    author_pattern = re.compile(r'^[А-ЯЁ][а-яё]+\s+[А-ЯЁ]\.?$')
 
-    matches = pattern.findall(text)
-    
-    logger.info(f"Найдено {len(matches)} потенциальных транзакций.")
-
-    for author, amount_str in matches:
-        amount = _clean_amount_string(amount_str)
-        if author and amount:
-            transactions.append({
-                'author': author.strip(),
-                'amount': amount,
-                'bank': bank if bank else "Не определен"
-            })
+    for i, line in enumerate(lines):
+        amount_match = amount_pattern.search(line)
+        # Если строка содержит сумму дохода
+        if amount_match:
+            amount_str = amount_match.group(1)
+            amount = _clean_amount_string(amount_str)
             
+            author = None
+            # Ищем автора в предыдущих строках. На скриншотах Т-Банка он обычно на 2 строки выше.
+            # Проверяем строки с i-1 по i-3, чтобы быть более гибкими к ошибкам OCR
+            if i > 0:
+                # В скриншоте Т-Банка имя находится через одну строку выше (i-2)
+                # Пример:
+                # [i-2]: Тамирлан Ш.  <- Имя
+                # [i-1]: Transfers    <- Тип
+                # [i]:   +200 Р       <- Сумма
+                if i >= 2 and author_pattern.match(lines[i-2]):
+                    author = lines[i-2]
+                # Запасной вариант: ищем на строке прямо перед суммой
+                elif author_pattern.match(lines[i-1]):
+                     author = lines[i-1]
+
+
+            if author and amount:
+                transactions.append({
+                    'author': _clean_author_string(author),
+                    'amount': amount,
+                    'bank': bank if bank else "Не определен"
+                })
+
     logger.info(f"📊 Парсинг множественных транзакций завершен. Распознано: {len(transactions)} записей.")
     return transactions
+
 
 def parse_transaction_data(text: str, transaction_type: str) -> dict:
     logger.info(f"🔍 Начинаем парсинг. Тип: {transaction_type.upper()}. Объем текста: {len(text)} символов.")
