@@ -37,23 +37,24 @@ logger = logging.getLogger(__name__)
 ) = range(8)
 
 def build_summary_text(data: dict) -> str:
-    # New logic for multi-transaction summary
+    # Logic for multi-transaction summary
     if 'transactions' in data:
         summaries = []
         pet_name = data.get('pet_name', '...')
         date = data.get('date', '...')
         
-        for tx in data['transactions']:
+        for i, tx in enumerate(data['transactions']):
             summary_parts = [
                 "Тип: 📈 *Доход*",
                 f"Подопечный: *{pet_name}*",
                 f"Дата: *{date}*",
-                f"Сумма: *{tx.get('amount', '...')} руб*.",
+                f"Сумма: *{tx.get('amount', '...')} ₽*",
                 f"Банк: *{tx.get('bank', '...')}*",
                 f"Отправитель: *{tx.get('author', '...')}*"
             ]
             summaries.append("\n".join(summary_parts))
         
+        # Using a clear separator for readability
         final_summary = "\n\n---\n\n".join(summaries)
         
         if data.get('comment'):
@@ -75,7 +76,7 @@ def build_summary_text(data: dict) -> str:
             f"Банк: *{ud.get('bank', '...')}*",
             f"Отправитель: *{ud.get('author', '...')}*"
         ])
-    else:
+    else: # Expense
         summary_parts.extend([
             f"Подопечный: *{ud.get('pet_name', '...')}*", 
             f"Дата: *{ud.get('date', '...')}*",
@@ -88,6 +89,7 @@ def build_summary_text(data: dict) -> str:
         summary_parts.append(f"Комментарий: _{ud.get('comment')}_")
 
     return "\n".join(summary_parts)
+
 
 async def _show_summary(update: Update, context: ContextTypes.DEFAULT_TYPE, text_prefix: str):
     summary_text = build_summary_text(context.user_data)
@@ -138,10 +140,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
-    await update.message.reply_text(
-        "Хорошо, операция отменена. Если передумаете, просто вызовите меня командой /start."
-    )
+    query = update.callback_query
+    message = "Хорошо, операция отменена. Если передумаете, просто вызовите меня командой /start."
+    if query:
+        await query.edit_message_text(message)
+    else:
+        await update.message.reply_text(message)
     return ConversationHandler.END
+
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     help_text = (
@@ -202,6 +208,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         ud = context.user_data
         transaction_type = ud.get('type')
         
+        # Logic for multiple transactions
         if transaction_type == 'transaction':
             transactions = parse_multiple_transactions(recognized_text)
             if not transactions:
@@ -211,16 +218,14 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                 return STATE_AWAITING_PHOTO
 
             ud['transactions'] = transactions
+            # Per requirements, date is always today for multi-transactions
             ud['date'] = datetime.now().strftime("%d.%m.%Y")
+        
+        # Logic for single income/expense
         else:
-            ud['date'] = parse_date(recognized_text)
-            ud['amount'] = parse_amount(recognized_text, transaction_type)
-            ud['author'] = parse_author(recognized_text, transaction_type)
+            parsed_data = parse_transaction_data(recognized_text, transaction_type)
+            ud.update(parsed_data)
 
-            if transaction_type == 'income':
-                ud['bank'] = parse_bank(recognized_text)
-            else:
-                ud['procedure'] = parse_procedure(recognized_text)
 
         await _show_summary(update, context, "Готово! ✨ Вот что мне удалось распознать:")
         return STATE_CONFIRMATION
@@ -241,6 +246,7 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
     if action == 'save':
         await query.edit_message_text("Минутку, сохраняю данные в таблицу... ⏳")
         
+        # Handle saving multiple transactions
         if 'transactions' in ud:
             sheet_link = None
             pet_name = ud.get('pet_name', 'хвостик')
@@ -250,7 +256,7 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
                 full_transaction_data = {
                     'pet_name': ud.get('pet_name'),
                     'date': ud.get('date'),
-                    'type': 'income',
+                    'type': 'income',  # All multi-transactions are income
                     'amount': tx_data.get('amount'),
                     'bank': tx_data.get('bank'),
                     'author': tx_data.get('author'),
@@ -258,32 +264,29 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
                 }
                 
                 try:
+                    # Keep overwriting sheet_link, the last one is fine
                     sheet_link = write_transaction(full_transaction_data)
                     if sheet_link:
                         success_count += 1
                 except Exception as e:
                     logger.error(f"Ошибка при записи в Google Sheets (мульти-транзакция): {e}", exc_info=True)
-                    await query.edit_message_text("❌ Ошибка при сохранении одной из записей. Пожалуйста, свяжитесь с администратором.")
-                    context.user_data.clear()
-                    return ConversationHandler.END
-
-            if sheet_link:
+            
+            if success_count > 0 and sheet_link:
                 success_message = (
                     f"✅ *Успех!* Записи ({success_count} шт.) для *{pet_name}* добавлены в таблицу.\n\n"
                     f"🔗 [Посмотреть записи в таблице]({sheet_link})"
                 )
                 await query.edit_message_text(
-                    success_message,
-                    parse_mode='Markdown',
-                    disable_web_page_preview=True,
-                    reply_markup=get_restart_keyboard()
+                    success_message, parse_mode='Markdown',
+                    disable_web_page_preview=True, reply_markup=get_restart_keyboard()
                 )
                 return STATE_DONE
             else:
                 error_text = "❌ Не удалось сохранить данные. Что-то пошло не так с таблицей. Пожалуйста, попробуйте снова."
                 await query.edit_message_text(error_text, reply_markup=get_restart_keyboard())
-
-        else: # Existing logic for single transaction
+                
+        # Handle saving a single transaction
+        else: 
             try:
                 sheet_link = write_transaction(context.user_data)
                 if sheet_link:
@@ -293,10 +296,8 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
                         f"🔗 [Посмотреть запись в таблице]({sheet_link})"
                     )
                     await query.edit_message_text(
-                        success_message,
-                        parse_mode='Markdown',
-                        disable_web_page_preview=True,
-                        reply_markup=get_restart_keyboard()
+                        success_message, parse_mode='Markdown',
+                        disable_web_page_preview=True, reply_markup=get_restart_keyboard()
                     )
                     return STATE_DONE
                 else:
@@ -313,10 +314,10 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     elif action == 'edit':
         if 'transactions' in ud:
-            await query.edit_message_text(
+            await query.answer(
                 "Редактирование для нескольких записей сразу не поддерживается. 😅\n\n"
-                "Вы можете сохранить все, что распознано верно, либо отменить операцию и добавить записи по одной через кнопку 'Доход'.",
-                reply_markup=get_confirmation_keyboard()
+                "Вы можете сохранить все, что распознано верно, либо отменить операцию и добавить записи по одной.",
+                show_alert=True
             )
             return STATE_CONFIRMATION
 
@@ -330,8 +331,8 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
     elif action == 'add_comment':
         prompt_text = "Конечно! Напишите комментарий, который нужно добавить:"
         if 'transactions' in ud:
-            prompt_text += "\n\n(Он будет применен ко всем записям на скриншоте)"
-        await query.edit_message_text(prompt_text)
+            prompt_text += "\n\n_(Он будет применен ко всем записям на скриншоте)_"
+        await query.edit_message_text(prompt_text, parse_mode='Markdown')
         return STATE_AWAITING_COMMENT
 
     elif action == 'cancel':
@@ -355,7 +356,7 @@ async def handle_editing_choice(update: Update, context: ContextTypes.DEFAULT_TY
     field_labels = {
         'pet_name': 'имя подопечного', 'date': 'дату (в формате ДД.ММ.ГГГГ)',
         'amount': 'сумму (например, 123.45)', 'bank': 'название банка',
-        'author': 'отправитель', 'procedure': 'назначение'
+        'author': 'отправителя/поставщика', 'procedure': 'назначение'
     }
     prompt_text = f"Хорошо, введите новое значение для поля *'{field_labels.get(field_to_edit, field_to_edit)}'*:"
     await query.edit_message_text(prompt_text, parse_mode='Markdown')
@@ -381,13 +382,16 @@ async def handle_edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             )
             return STATE_AWAITING_EDIT_VALUE
     elif field == 'date':
-        if not re.match(r'^\d{2}\.\d{2}\.\d{4}$', new_value):
+        try:
+            # Validate date format before saving
+            datetime.strptime(new_value, '%d.%m.%Y')
+            context.user_data[field] = new_value
+        except ValueError:
             await update.message.reply_text(
                 "Ой, неверный формат даты. Пожалуйста, введите её как `ДД.ММ.ГГГГ`, например: `08.10.2025`.\nПопробуйте снова.",
                 parse_mode='Markdown'
             )
             return STATE_AWAITING_EDIT_VALUE
-        context.user_data[field] = new_value
     else:
         context.user_data[field] = new_value
 
@@ -402,45 +406,40 @@ async def handle_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 def setup_handlers():
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('start', start)],
+        entry_points=[CommandHandler('start', start), CallbackQueryHandler(start, pattern='^restart_flow$')],
         states={
             STATE_AWAITING_TYPE: [
-                CallbackQueryHandler(handle_type, pattern='^(income|expense|transaction)$'),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_invalid_input)
+                CallbackQueryHandler(handle_type, pattern='^(income|expense|transaction)$')
             ],
             STATE_AWAITING_PET: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_pet),
-                MessageHandler(filters.ALL & ~filters.COMMAND & ~filters.TEXT, handle_invalid_input)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_pet)
             ],
             STATE_AWAITING_PHOTO: [
-                MessageHandler(filters.PHOTO, handle_photo),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_invalid_input)
+                MessageHandler(filters.PHOTO, handle_photo)
             ],
             STATE_CONFIRMATION: [
-                CallbackQueryHandler(handle_confirmation, pattern='^(save|edit|add_comment|cancel)$'),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_invalid_input)
+                CallbackQueryHandler(handle_confirmation, pattern='^(save|edit|add_comment|cancel)$')
             ],
             STATE_EDITING_CHOICE: [
-                CallbackQueryHandler(handle_editing_choice),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_invalid_input)
+                CallbackQueryHandler(handle_editing_choice, pattern='^edit_')
             ],
             STATE_AWAITING_EDIT_VALUE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_value),
-                MessageHandler(filters.ALL & ~filters.COMMAND & ~filters.TEXT, handle_invalid_input)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_value)
             ],
             STATE_AWAITING_COMMENT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_comment),
-                MessageHandler(filters.ALL & ~filters.COMMAND & ~filters.TEXT, handle_invalid_input)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_comment)
             ],
             STATE_DONE: [
-                CallbackQueryHandler(start, pattern='^restart_flow$'),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_invalid_input)
+                CallbackQueryHandler(start, pattern='^restart_flow$')
             ]
         },
         fallbacks=[
             CommandHandler('cancel', cancel),
             CommandHandler('start', start),
-        ]
+            # Generic message handler for invalid inputs in any state
+            MessageHandler(filters.ALL, handle_invalid_input)
+        ],
+        per_message=False
     )
 
     help_handler = CommandHandler('help', help_command)

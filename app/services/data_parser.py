@@ -280,19 +280,21 @@ def parse_multiple_transactions(text: str) -> list[dict]:
     bank = parse_bank(text)
     transactions = []
 
-    # This corrected regex is designed to find blocks of text containing an author and an amount.
-    # It looks for a name in the format "Имя И." followed by any text, and then an amount like "+ 123.45 ₽".
+    # This regex is designed to find blocks of text containing an author and an amount.
+    # It looks for a name in the format "Имя И." followed by any characters (including newlines),
+    # and then an amount like "+ 123.45 ₽". The non-greedy '.*?' is crucial.
     pattern = re.compile(
         # Group 1: Author name, e.g., "Тамирлан Ш."
         r'([А-ЯЁ][а-яё]+\s+[А-ЯЁ]\.)'
         # Non-greedy match for any characters (including newlines) between author and amount.
-        r'[\s\S]+?'
+        # This is constrained to prevent matching across the entire document.
+        r'.*?'
         # The amount part: a literal '+', optional whitespace, then the amount string.
         # Group 2: The amount string itself, e.g., "200" or "27 013,10".
         r'\+\s*([\d\s,.]+)'
         # Currency symbols are used as an anchor for the match but are not captured.
-        r'\s*(?:Р|₽)',
-        re.IGNORECASE
+        r'\s*₽',
+        re.DOTALL | re.IGNORECASE
     )
 
     matches = pattern.findall(text)
