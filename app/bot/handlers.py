@@ -12,7 +12,10 @@ from app.bot.keyboards import (
     get_editing_keyboard, get_restart_keyboard
 )
 from app.services.vision_ocr import recognize_text
-from app.services.data_parser import parse_date, parse_amount, parse_bank, parse_author, parse_procedure, parse_transaction_data
+from app.services.data_parser import (
+    parse_date, parse_amount, parse_bank, parse_author, parse_procedure,
+    parse_transaction_data, parse_multiple_transactions
+)
 from app.services.sheets_client import write_transaction
 from config.settings import settings
 
@@ -34,6 +37,31 @@ logger = logging.getLogger(__name__)
 ) = range(8)
 
 def build_summary_text(data: dict) -> str:
+    # New logic for multi-transaction summary
+    if 'transactions' in data:
+        summaries = []
+        pet_name = data.get('pet_name', '...')
+        date = data.get('date', '...')
+        
+        for tx in data['transactions']:
+            summary_parts = [
+                "Тип: 📈 *Доход*",
+                f"Подопечный: *{pet_name}*",
+                f"Дата: *{date}*",
+                f"Сумма: *{tx.get('amount', '...')} руб*.",
+                f"Банк: *{tx.get('bank', '...')}*",
+                f"Отправитель: *{tx.get('author', '...')}*"
+            ]
+            summaries.append("\n".join(summary_parts))
+        
+        final_summary = "\n\n---\n\n".join(summaries)
+        
+        if data.get('comment'):
+            final_summary += f"\n\n*Общий комментарий:* _{data.get('comment')}_"
+            
+        return final_summary
+
+    # Original logic for single transaction summary
     ud = data
     type_str = '📈 *Доход*' if ud.get('type') == 'income' else '🛍️ *Расход*' if ud.get('type') == 'expense' else '💸 *Транзакция*'
 
@@ -175,9 +203,15 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         transaction_type = ud.get('type')
         
         if transaction_type == 'transaction':
+            transactions = parse_multiple_transactions(recognized_text)
+            if not transactions:
+                await update.message.reply_text(
+                    "К сожалению, не удалось найти транзакций на этом скриншоте. Попробуйте другой или выберите тип 'Доход' для одиночной записи."
+                )
+                return STATE_AWAITING_PHOTO
+
+            ud['transactions'] = transactions
             ud['date'] = datetime.now().strftime("%d.%m.%Y")
-            parsed_data = parse_transaction_data(recognized_text, 'income')
-            ud.update(parsed_data)
         else:
             ud['date'] = parse_date(recognized_text)
             ud['amount'] = parse_amount(recognized_text, transaction_type)
@@ -202,16 +236,41 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     await query.answer()
     action = query.data
+    ud = context.user_data
 
     if action == 'save':
         await query.edit_message_text("Минутку, сохраняю данные в таблицу... ⏳")
-        try:
-            sheet_link = write_transaction(context.user_data)
+        
+        if 'transactions' in ud:
+            sheet_link = None
+            pet_name = ud.get('pet_name', 'хвостик')
+            success_count = 0
+            
+            for tx_data in ud['transactions']:
+                full_transaction_data = {
+                    'pet_name': ud.get('pet_name'),
+                    'date': ud.get('date'),
+                    'type': 'income',
+                    'amount': tx_data.get('amount'),
+                    'bank': tx_data.get('bank'),
+                    'author': tx_data.get('author'),
+                    'comment': ud.get('comment', '')
+                }
+                
+                try:
+                    sheet_link = write_transaction(full_transaction_data)
+                    if sheet_link:
+                        success_count += 1
+                except Exception as e:
+                    logger.error(f"Ошибка при записи в Google Sheets (мульти-транзакция): {e}", exc_info=True)
+                    await query.edit_message_text("❌ Ошибка при сохранении одной из записей. Пожалуйста, свяжитесь с администратором.")
+                    context.user_data.clear()
+                    return ConversationHandler.END
+
             if sheet_link:
-                pet_name = context.user_data.get('pet_name', 'хвостик')
                 success_message = (
-                    f"✅ *Успех!* Запись для *{pet_name}* добавлена в таблицу.\n\n"
-                    f"🔗 [Посмотреть запись в таблице]({sheet_link})"
+                    f"✅ *Успех!* Записи ({success_count} шт.) для *{pet_name}* добавлены в таблицу.\n\n"
+                    f"🔗 [Посмотреть записи в таблице]({sheet_link})"
                 )
                 await query.edit_message_text(
                     success_message,
@@ -222,17 +281,45 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
                 return STATE_DONE
             else:
                 error_text = "❌ Не удалось сохранить данные. Что-то пошло не так с таблицей. Пожалуйста, попробуйте снова."
-                await query.edit_message_text(error_text)
+                await query.edit_message_text(error_text, reply_markup=get_restart_keyboard())
 
-        except Exception as e:
-            logger.error(f"Ошибка при записи в Google Sheets: {e}", exc_info=True)
-            error_text = "❌ Ошибка при сохранении. Пожалуйста, свяжитесь с администратором."
-            await query.edit_message_text(error_text)
+        else: # Existing logic for single transaction
+            try:
+                sheet_link = write_transaction(context.user_data)
+                if sheet_link:
+                    pet_name = context.user_data.get('pet_name', 'хвостик')
+                    success_message = (
+                        f"✅ *Успех!* Запись для *{pet_name}* добавлена в таблицу.\n\n"
+                        f"🔗 [Посмотреть запись в таблице]({sheet_link})"
+                    )
+                    await query.edit_message_text(
+                        success_message,
+                        parse_mode='Markdown',
+                        disable_web_page_preview=True,
+                        reply_markup=get_restart_keyboard()
+                    )
+                    return STATE_DONE
+                else:
+                    error_text = "❌ Не удалось сохранить данные. Что-то пошло не так с таблицей. Пожалуйста, попробуйте снова."
+                    await query.edit_message_text(error_text)
+
+            except Exception as e:
+                logger.error(f"Ошибка при записи в Google Sheets: {e}", exc_info=True)
+                error_text = "❌ Ошибка при сохранении. Пожалуйста, свяжитесь с администратором."
+                await query.edit_message_text(error_text)
 
         context.user_data.clear()
         return ConversationHandler.END
 
     elif action == 'edit':
+        if 'transactions' in ud:
+            await query.edit_message_text(
+                "Редактирование для нескольких записей сразу не поддерживается. 😅\n\n"
+                "Вы можете сохранить все, что распознано верно, либо отменить операцию и добавить записи по одной через кнопку 'Доход'.",
+                reply_markup=get_confirmation_keyboard()
+            )
+            return STATE_CONFIRMATION
+
         summary_text = build_summary_text(context.user_data)
         await query.edit_message_text(
             f"Что именно нужно поправить? Выберите поле ниже:\n\n{summary_text}",
@@ -241,7 +328,10 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
         return STATE_EDITING_CHOICE
 
     elif action == 'add_comment':
-        await query.edit_message_text("Конечно! Напишите комментарий, который нужно добавить:")
+        prompt_text = "Конечно! Напишите комментарий, который нужно добавить:"
+        if 'transactions' in ud:
+            prompt_text += "\n\n(Он будет применен ко всем записям на скриншоте)"
+        await query.edit_message_text(prompt_text)
         return STATE_AWAITING_COMMENT
 
     elif action == 'cancel':

@@ -271,6 +271,38 @@ def parse_procedure(text: str) -> str | None:
                 return result
     return None
 
+def parse_multiple_transactions(text: str) -> list[dict]:
+    """
+    Parses a block of text to find multiple income transactions from a screenshot.
+    """
+    logger.info(f"🔍 Начинаем парсинг множественных транзакций. Объем текста: {len(text)} символов.")
+    
+    bank = parse_bank(text)
+    transactions = []
+
+    pattern = re.compile(
+        r'([А-ЯЁ][а-яё]+\s[А-ЯЁ]\.)'
+        r'[\s\S]*?'
+        r'\+([\d\s,]+\d{1,2})\s*Р',
+        re.IGNORECASE
+    )
+
+    matches = pattern.findall(text)
+    
+    logger.info(f"Найдено {len(matches)} потенциальных транзакций.")
+
+    for author, amount_str in matches:
+        amount = _clean_amount_string(amount_str)
+        if author and amount:
+            transactions.append({
+                'author': author.strip(),
+                'amount': amount,
+                'bank': bank if bank else "Не определен"
+            })
+            
+    logger.info(f"📊 Парсинг множественных транзакций завершен. Распознано: {len(transactions)} записей.")
+    return transactions
+
 def parse_transaction_data(text: str, transaction_type: str) -> dict:
     logger.info(f"🔍 Начинаем парсинг. Тип: {transaction_type.upper()}. Объем текста: {len(text)} символов.")
     
