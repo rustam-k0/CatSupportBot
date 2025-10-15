@@ -1,3 +1,5 @@
+[file name]: handlers.py
+[file content begin]
 import logging
 import re
 from datetime import datetime
@@ -13,6 +15,7 @@ from app.bot.keyboards import (
 )
 from app.services.vision_ocr import recognize_text
 from app.services.data_parser import (
+    parse_date, parse_amount, parse_bank, parse_author, parse_procedure,
     parse_transaction_data, parse_multiple_transactions
 )
 from app.services.sheets_client import write_transaction
@@ -36,6 +39,7 @@ logger = logging.getLogger(__name__)
 ) = range(8)
 
 def build_summary_text(data: dict) -> str:
+    # Logic for multi-transaction summary
     if 'transactions' in data:
         summaries = []
         pet_name = data.get('pet_name', '...')
@@ -59,6 +63,7 @@ def build_summary_text(data: dict) -> str:
             
         return final_summary
 
+    # Original logic for single transaction summary
     ud = data
     type_str = '📈 *Доход*' if ud.get('type') == 'income' else '🛍️ *Расход*' if ud.get('type') == 'expense' else '💸 *Транзакция*'
 
@@ -204,6 +209,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         ud = context.user_data
         transaction_type = ud.get('type')
         
+        # Улучшенная логика для множественных транзакций
         if transaction_type == 'transaction':
             transactions = parse_multiple_transactions(recognized_text)
             if not transactions:
@@ -213,12 +219,13 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                 return STATE_AWAITING_PHOTO
 
             ud['transactions'] = transactions
+            # Для транзакций используем сегодняшнюю дату
             ud['date'] = datetime.now().strftime("%d.%m.%Y")
         
+        # Логика для одиночных операций
         else:
             parsed_data = parse_transaction_data(recognized_text, transaction_type)
             ud.update(parsed_data)
-
 
         await _show_summary(update, context, "Готово! ✨ Вот что мне удалось распознать:")
         return STATE_CONFIRMATION
@@ -239,6 +246,7 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
     if action == 'save':
         await query.edit_message_text("Минутку, сохраняю данные в таблицу... ⏳")
         
+        # Сохранение множественных транзакций
         if 'transactions' in ud:
             sheet_link = None
             pet_name = ud.get('pet_name', 'хвостик')
@@ -248,7 +256,7 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
                 full_transaction_data = {
                     'pet_name': ud.get('pet_name'),
                     'date': ud.get('date'),
-                    'type': 'income',
+                    'type': 'income',  # Все транзакции - доходы
                     'amount': tx_data.get('amount'),
                     'bank': tx_data.get('bank'),
                     'author': tx_data.get('author'),
@@ -276,6 +284,7 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
                 error_text = "❌ Не удалось сохранить данные. Что-то пошло не так с таблицей. Пожалуйста, попробуйте снова."
                 await query.edit_message_text(error_text, reply_markup=get_restart_keyboard())
                 
+        # Сохранение одиночной транзакции
         else: 
             try:
                 sheet_link = write_transaction(context.user_data)
@@ -305,7 +314,8 @@ async def handle_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
     elif action == 'edit':
         if 'transactions' in ud:
             await query.answer(
-                "Пожалуйста, отредактируйте данные в таблице.",
+                "Редактирование для нескольких записей сразу не поддерживается. 😅\n\n"
+                "Вы можете сохранить все, что распознано верно, либо отменить операцию и добавить записи по одной.",
                 show_alert=True
             )
             return STATE_CONFIRMATION
@@ -432,3 +442,4 @@ def setup_handlers():
     help_handler = CommandHandler('help', help_command)
 
     return conv_handler, help_handler
+[file content end]
